@@ -9,8 +9,7 @@ import 'package:get_video_thumbnail/src/video_thumbnail_platform.dart';
 /// An implementation of [VideoThumbnailPlatform] that uses method channels.
 class MethodChannelVideoThumbnail extends VideoThumbnailPlatform {
   /// The method channel used to interact with the native platform.
-  static const methodChannel =
-      MethodChannel('plugins.kasunthilina.dev/get_video_thumbnail');
+  static const methodChannel = MethodChannel('plugins.kasunthilina.dev/get_video_thumbnail');
 
   final Map<int, Completer<Object>> _futures = <int, Completer<Object>>{};
 
@@ -91,9 +90,7 @@ class MethodChannelVideoThumbnail extends VideoThumbnailPlatform {
   }
 
   int _getTimeMsValue(int? timeMs) =>
-      defaultTargetPlatform == TargetPlatform.android
-          ? timeMs ?? -1
-          : timeMs ?? 0;
+      defaultTargetPlatform == TargetPlatform.android ? timeMs ?? -1 : timeMs ?? 0;
 
   @override
   Future<List<XFile>> thumbnailFiles({

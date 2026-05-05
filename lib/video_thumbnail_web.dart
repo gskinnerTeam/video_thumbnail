@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:html';
+import 'dart:js_interop';
 import 'dart:math' as math;
 
 import 'package:cross_file/cross_file.dart';
@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_web_plugins/flutter_web_plugins.dart';
 import 'package:get_video_thumbnail/src/image_format.dart';
 import 'package:get_video_thumbnail/src/video_thumbnail_platform.dart';
+import 'package:web/web.dart' as web;
 
 // An error code value to error name Map.
 // See: https://developer.mozilla.org/en-US/docs/Web/API/MediaError/code
@@ -32,6 +33,7 @@ const String _kDefaultErrorMessage =
     'No further diagnostic information can be determined or provided.';
 
 /// A web implementation of the VideoThumbnailPlatform of the VideoThumbnail plugin.
+/// Rewritten to use package:web + dart:js_interop for WASM compatibility.
 class VideoThumbnailWeb extends VideoThumbnailPlatform {
   /// Constructs a VideoThumbnailWeb
   VideoThumbnailWeb();
@@ -51,28 +53,24 @@ class VideoThumbnailWeb extends VideoThumbnailPlatform {
     int? timeMs,
     required int quality,
   }) async {
-    final blobs = <Blob>[];
+    final results = <XFile>[];
 
     for (final video in videos) {
-      blobs.add(
-        await _createThumbnail(
-          videoSrc: video,
+      results.add(
+        await thumbnailFile(
+          video: video,
           headers: headers,
+          thumbnailPath: thumbnailPath,
           imageFormat: imageFormat,
           maxHeight: maxHeight,
           maxWidth: maxWidth,
-          timeMs: timeMs ?? 0,
+          timeMs: timeMs,
           quality: quality,
         ),
       );
     }
 
-    return blobs
-        .map(
-          (blob) =>
-              XFile(Url.createObjectUrlFromBlob(blob), mimeType: blob.type),
-        )
-        .toList();
+    return results;
   }
 
   @override
@@ -96,7 +94,8 @@ class VideoThumbnailWeb extends VideoThumbnailPlatform {
       quality: quality,
     );
 
-    return XFile(Url.createObjectUrlFromBlob(blob), mimeType: blob.type);
+    final url = web.URL.createObjectURL(blob);
+    return XFile(url, mimeType: blob.type);
   }
 
   @override
@@ -118,15 +117,11 @@ class VideoThumbnailWeb extends VideoThumbnailPlatform {
       timeMs: timeMs ?? 0,
       quality: quality,
     );
-    final path = Url.createObjectUrlFromBlob(blob);
-    final file = XFile(path, mimeType: blob.type);
-    final bytes = await file.readAsBytes();
-    Url.revokeObjectUrl(path);
-
-    return bytes;
+    final arrayBuffer = await blob.arrayBuffer().toDart;
+    return arrayBuffer.toDart.asUint8List();
   }
 
-  Future<Blob> _createThumbnail({
+  Future<web.Blob> _createThumbnail({
     required String videoSrc,
     required Map<String, String>? headers,
     required ImageFormat imageFormat,
@@ -135,150 +130,148 @@ class VideoThumbnailWeb extends VideoThumbnailPlatform {
     required int quality,
     int timeMs = 0,
   }) async {
-    final completer = Completer<Blob>();
-
-    final video = document.createElement('video') as VideoElement;
+    final video = web.HTMLVideoElement();
     final timeSec = math.max(timeMs / 1000, 0);
     final fetchVideo = headers != null && headers.isNotEmpty;
+    String? objectUrl;
 
-    video.onLoadedMetadata.listen((event) {
-      video.currentTime = timeSec;
+    try {
+      video.preload = 'metadata';
 
+      // Load the video source
       if (fetchVideo) {
-        Url.revokeObjectUrl(video.src);
-      }
-    });
-
-    video.onSeeked.listen((Event e) async {
-      if (!completer.isCompleted) {
-        final canvas = document.createElement('canvas') as CanvasElement;
-        final ctx = canvas.getContext('2d')! as CanvasRenderingContext2D;
-
-        if (maxWidth == 0 && maxHeight == 0) {
-          canvas
-            ..width = video.videoWidth
-            ..height = video.videoHeight;
-          ctx.drawImage(video, 0, 0);
-        } else {
-          final aspectRatio = video.videoWidth / video.videoHeight;
-          if (maxWidth == 0) {
-            maxWidth = (maxHeight * aspectRatio).round();
-          } else if (maxHeight == 0) {
-            maxHeight = (maxWidth / aspectRatio).round();
-          }
-
-          final inputAspectRatio = maxWidth / maxHeight;
-          if (aspectRatio > inputAspectRatio) {
-            maxHeight = (maxWidth / aspectRatio).round();
-          } else {
-            maxWidth = (maxHeight * aspectRatio).round();
-          }
-
-          canvas
-            ..width = maxWidth
-            ..height = maxHeight;
-          ctx.drawImageScaled(video, 0, 0, maxWidth, maxHeight);
-        }
-
-        try {
-          final blob = canvas.toBlob(
-            _imageFormatToCanvasFormat(imageFormat),
-            quality / 100,
-          );
-
-          completer.complete(blob);
-        } catch (e, s) {
-          completer.completeError(
-            PlatformException(
-              code: 'CANVAS_EXPORT_ERROR',
-              details: e,
-              stacktrace: s.toString(),
-            ),
-            s,
-          );
-        }
-      }
-    });
-
-    video.onError.listen((Event e) {
-      // The Event itself (_) doesn't contain info about the actual error.
-      // We need to look at the HTMLMediaElement.error.
-      // See: https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/error
-      if (!completer.isCompleted) {
-        final error = video.error!;
-        completer.completeError(
-          PlatformException(
-            code: _kErrorValueToErrorName[error.code]!,
-            message:
-                error.message != '' ? error.message : _kDefaultErrorMessage,
-            details: _kErrorValueToErrorDescription[error.code],
-          ),
-        );
-      }
-    });
-
-    if (fetchVideo) {
-      try {
         final blob = await _fetchVideoByHeaders(
           videoSrc: videoSrc,
           headers: headers,
         );
-
-        video.src = Url.createObjectUrlFromBlob(blob);
-      } catch (e, s) {
-        completer.completeError(e, s);
+        objectUrl = web.URL.createObjectURL(blob);
+        video.src = objectUrl;
+      } else {
+        video.crossOrigin = 'Anonymous';
+        video.src = videoSrc;
       }
-    } else {
-      video
-        ..crossOrigin = 'Anonymous'
-        ..src = videoSrc;
-    }
 
-    return completer.future;
+      // Wait for metadata, handling errors via a race
+      await Future.any([
+        video.onLoadedMetadata.first,
+        video.onError.first.then((_) => throw _createVideoError(video)),
+      ]);
+
+      // Seek to the requested time to ensure a decodable frame is available
+      video.currentTime = timeSec;
+      await Future.any([
+        video.onSeeked.first,
+        video.onError.first.then((_) => throw _createVideoError(video)),
+      ]);
+
+      // Draw the frame to a canvas
+      final canvas = web.HTMLCanvasElement();
+      final ctx = canvas.getContext('2d')! as web.CanvasRenderingContext2D;
+
+      if (maxWidth == 0 && maxHeight == 0) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+      } else {
+        final aspectRatio = video.videoWidth / video.videoHeight;
+        var targetWidth = maxWidth;
+        var targetHeight = maxHeight;
+        if (targetWidth == 0) {
+          targetWidth = (targetHeight * aspectRatio).round();
+        } else if (targetHeight == 0) {
+          targetHeight = (targetWidth / aspectRatio).round();
+        }
+
+        final inputAspectRatio = targetWidth / targetHeight;
+        if (aspectRatio > inputAspectRatio) {
+          targetHeight = (targetWidth / aspectRatio).round();
+        } else {
+          targetWidth = (targetHeight * aspectRatio).round();
+        }
+
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+      }
+
+      // Export the canvas as a blob
+      final completer = Completer<web.Blob>();
+      canvas.toBlob(
+        (web.Blob? blob) {
+          if (blob != null) {
+            completer.complete(blob);
+          } else {
+            completer.completeError(
+              PlatformException(
+                code: 'CANVAS_EXPORT_ERROR',
+                message: 'toBlob returned null',
+              ),
+            );
+          }
+        }.toJS,
+        _imageFormatToCanvasFormat(imageFormat),
+        (quality / 100).toJS,
+      );
+      return await completer.future;
+    } finally {
+      // Clean up to prevent memory leaks.
+      if (objectUrl != null) web.URL.revokeObjectURL(objectUrl);
+      video.src = '';
+      video.load();
+    }
   }
 
-  /// Fetching video by [headers].
-  ///
-  /// To avoid reading the video's bytes into memory, set the
-  /// [HttpRequest.responseType] to 'blob'. This allows the blob to be stored in
-  /// the browser's disk or memory cache.
-  Future<Blob> _fetchVideoByHeaders({
+  // The Event itself does not contain info about the actual error.
+  // We need to look at the HTMLMediaElement.error.
+  // See: https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/error
+  PlatformException _createVideoError(web.HTMLVideoElement video) {
+    final error = video.error;
+    if (error != null) {
+      return PlatformException(
+        code: _kErrorValueToErrorName[error.code] ?? 'UNKNOWN_ERROR',
+        message: error.message.isNotEmpty ? error.message : _kDefaultErrorMessage,
+        details: _kErrorValueToErrorDescription[error.code],
+      );
+    }
+    return PlatformException(
+      code: 'UNKNOWN_ERROR',
+      message: _kDefaultErrorMessage,
+    );
+  }
+
+  /// Fetches video as a blob using custom [headers].
+  Future<web.Blob> _fetchVideoByHeaders({
     required String videoSrc,
     required Map<String, String> headers,
   }) async {
-    final completer = Completer<Blob>();
+    final headersInit = web.Headers();
+    // ignore: unnecessary_lambdas - tearoffs of external interop members are disallowed in WASM
+    headers.forEach((key, value) => headersInit.append(key, value));
 
-    final xhr = HttpRequest()
-      ..open('GET', videoSrc, async: true)
-      ..responseType = 'blob';
-    headers.forEach(xhr.setRequestHeader);
+    final response = await web.window
+        .fetch(
+          videoSrc.toJS,
+          web.RequestInit(
+            method: 'GET',
+            headers: headersInit,
+          ),
+        )
+        .toDart;
 
-    xhr.onLoad.first.then((ProgressEvent value) {
-      completer.complete(xhr.response as Blob);
-    });
-
-    xhr.onError.first.then((ProgressEvent value) {
-      completer.completeError(
-        PlatformException(
-          code: 'VIDEO_FETCH_ERROR',
-          message: 'Status: ${xhr.statusText}',
-        ),
+    if (!response.ok) {
+      throw PlatformException(
+        code: 'VIDEO_FETCH_ERROR',
+        message: 'Status: ${response.statusText}',
       );
-    });
-
-    xhr.send();
-
-    return completer.future;
-  }
-
-  String _imageFormatToCanvasFormat(ImageFormat imageFormat) {
-    switch (imageFormat) {
-      case ImageFormat.JPEG:
-        return 'image/jpeg';
-      case ImageFormat.PNG:
-        return 'image/png';
-      case ImageFormat.WEBP:
-        return 'image/webp';
     }
+
+    final blob = await response.blob().toDart;
+    return blob;
   }
+
+  String _imageFormatToCanvasFormat(ImageFormat format) => switch (format) {
+        ImageFormat.JPEG => 'image/jpeg',
+        ImageFormat.PNG => 'image/png',
+        ImageFormat.WEBP => 'image/webp',
+      };
 }
